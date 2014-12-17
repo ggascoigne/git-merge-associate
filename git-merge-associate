@@ -1,5 +1,7 @@
 #!/bin/bash
 #
+# Originally from https://gist.github.com/tvogel/894374
+#
 # Purpose: manually associate missed renames in merge conflicts
 #
 # Usage: git merge-associate <our-target> <base> <theirs>
@@ -24,10 +26,48 @@
 # After manual resolution of B/b and "git add B/b", A/a can be resolved by 
 # "git rm A/a"
 #
- 
+#
+#
+# :1: is the common ancestor,
+# :2: is the target branch’s version (typically the current branch),
+# :3: is the version from the branch which is being merged.
+
+# For example, if merging from scm/8.3.6-gradle to gradle-merge (aka HEAD), where renames and content changes cause git to get certain mapping wrong.
+
+# merge base is:
+
+# $ git merge-base HEAD scm/8.3.6-gradle
+# 3baf4b58edce372dd5f74645f0e21012f315ead0
+
+# $ git ls-tree 3baf4b58edce372dd5f74645f0e21012f315ead0 modules/space-common/tw/test/com/tripwire/common/time/TestTime.java
+# 100644 blob c2bdb64e5bfe517519c2555bebc431a40fc30fe8	modules/space-common/tw/test/com/tripwire/common/time/TestTime.java
+
+# $ git ls-tree gradle-merge tw-common/src/test/java/com/tripwire/common/time/TestTime.java
+# 100644 blob 93e9441433b84ef4654edf5c5de78d9db241374a	tw-common/src/test/java/com/tripwire/common/time/TestTime.java
+
+# $ git ls-tree scm/8.3.6-gradle tw-common/src/test/java/com/tripwire/common/time/TestTime.java
+# 100644 blob 257f2430516d1aefb239dd5345e9b6d3ecec2672	tw-common/src/test/java/com/tripwire/common/time/TestTime.java
+
+# we can run:
+
+# git merge-associate tw-common/src/test/java/com/tripwire/common/time/TestTime.java 3baf4b58edce372dd5f74645f0e21012f315ead0:modules/space-common/tw/test/com/tripwire/common/time/TestTime.java scm/8.3.6-gradle:tw-common/src/test/java/com/tripwire/common/time/TestTime.java
+
+# and it will update the index with:
+
+# 000000 0000000000000000000000000000000000000000 0	tw-common/src/test/java/com/tripwire/common/time/TestTime.java
+# 100644 c2bdb64e5bfe517519c2555bebc431a40fc30fe8 1	tw-common/src/test/java/com/tripwire/common/time/TestTime.java
+# 100644 93e9441433b84ef4654edf5c5de78d9db241374a 2	tw-common/src/test/java/com/tripwire/common/time/TestTime.java
+# 100644 257f2430516d1aefb239dd5345e9b6d3ecec2672 3	tw-common/src/test/java/com/tripwire/common/time/TestTime.java
+
+#
+# This generalises to
+#
+# git merge-associate target_file_name `git merge-base HEAD other_branch_name`:original_file_name other_branch_name:other_file_name
+#
+#
+
 set -e
-#set -x
- 
+
 get_tree()
 {
     SPEC="${!1}"
@@ -48,7 +88,7 @@ get_tree()
     eval ${1}_TREE="$TREE"
     eval ${1}_BASENAME="${SPEC##*:}"
 }
- 
+
 get_mode_and_sha()
 {
     eval SPEC="\${$1}"
@@ -91,26 +131,60 @@ get_mode_and_sha()
     eval $1_SHA="$RESULT_SHA"
     eval $1_MODE="$RESULT_MODE"
 }
- 
+
+usage() {
+    echo "Usage: git [-v] [-t] merge-associate <our-target> <base> <theirs>"
+    echo " -v : equivalent to set -x in the script, full tracing"
+    echo " -t : trace and don't make changes"
+    echo " -r newFileName : rename the file at the same time"
+}
+
+VERBOSE=0
+while getopts ":vtr:" opt; do
+    case $opt in
+        r) RENAME=$OPTARG ;;
+        t) VERBOSE=1 ;;
+        v) set -x;;
+        \?) usage
+        exit;;
+    esac
+done
+shift $(( OPTIND-1 ))
+
+function trace() {
+    [[ $VERBOSE == 1 ]] && echo $*
+}
+
 if [ "$#" -ne 3 ]; then
-    echo "Usage: git merge-associate <our-target> <base> <theirs>"
+    usage
     exit 1
 fi
- 
+
 TARGET="$1"
 BASE="$2"
 THEIRS="$3"
- 
+
 for VAR in TARGET BASE THEIRS; do
     get_tree $VAR
     get_mode_and_sha $VAR
 done
- 
-git update-index --index-info <<EOI
+
+if [ $VERBOSE -eq 0 ] ; then
+    CMD="git update-index --index-info"
+else
+    E=echo
+    CMD=cat
+fi
+
+if [ -n "$RENAME" ] ; then
+    TARGET_BASENAME=$RENAME
+fi
+
+$CMD <<EOI
 000000 0000000000000000000000000000000000000000 0	$TARGET_BASENAME
 $BASE_MODE $BASE_SHA 1	$TARGET_BASENAME
 $TARGET_MODE $TARGET_SHA 2	$TARGET_BASENAME
 $THEIRS_MODE $THEIRS_SHA 3	$TARGET_BASENAME
 EOI
- 
-git checkout -m -- $TARGET_BASENAME
+
+$E git checkout -m -- $TARGET_BASENAME
